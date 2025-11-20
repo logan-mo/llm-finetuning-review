@@ -78,9 +78,9 @@ print(f"Total Time Taken: {time.time() - start_time}")
 
 print(loss.item())
 
-
-# print(
-#     decode(
-#         model.generate(torch.ones(1, 1, dtype=torch.long), MAX_NEW_TOKENS)[0].tolist()
-#     )
-# )
+model = model.to("cpu")
+print(
+    decode(
+        model.generate(torch.ones(1, 1, dtype=torch.long), MAX_NEW_TOKENS)[0].tolist()
+    )
+)
