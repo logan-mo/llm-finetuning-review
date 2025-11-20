@@ -1,7 +1,9 @@
+import time
+
 import torch
 from torch import nn
 import torch.nn.functional as F
-import time
+from torch.utils.tensorboard import SummaryWriter
 
 # Parameters
 TEXT_DATA_PATH = "tiny_shiekspear.txt"
@@ -10,7 +12,9 @@ TRAIN_SPLIT = 0.9
 BLOCK_SIZE = 8
 BATCH_SIZE = 16
 MAX_NEW_TOKENS = 1000
-EPOCHS = 10000
+EPOCHS = 30000
+EVAL_ITERS = 100
+EVAL_INTERVAL = 250
 LEARNING_RATE = 1e-3
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 # DEVICE = torch.device("cpu")
@@ -35,6 +39,28 @@ def get_batch(data, batch_size, block_size):
     X = torch.stack([data[idx : idx + block_size] for idx in indices])
     y = torch.stack([data[idx + 1 : idx + block_size + 1] for idx in indices])
     return X, y
+
+
+@torch.no_grad()
+def estimate_loss(model: nn.Module, eval_iters, train_data, val_data):
+    out = {}
+    model.eval()
+
+    for split in ["train", "val"]:
+        losses = torch.zeros(eval_iters)
+        for k in range(eval_iters):
+            X, y = (
+                get_batch(train_data, BATCH_SIZE, BLOCK_SIZE)
+                if split == "train"
+                else get_batch(val_data, BATCH_SIZE, BLOCK_SIZE)
+            )
+            logits, loss = model(X, y)
+
+            losses[k] = loss
+
+        out[split] = losses.mean()
+    model.train()
+    return out
 
 
 train_data_tensor = torch.tensor(encode(text_data), dtype=torch.long).to(DEVICE)
@@ -63,11 +89,21 @@ class BigramLanguageModel(nn.Module):
         return idx
 
 
+writer = SummaryWriter()
 model = BigramLanguageModel(VOCAB_SIZE).to(DEVICE)
 optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 
 start_time = time.time()
 for steps in range(EPOCHS):
+
+    if steps + 1 % EVAL_INTERVAL == 0:
+        losses = estimate_loss(model, EVAL_ITERS, train_data, val_data)
+        print(
+            f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}"
+        )
+        writer.add_scalar("Loss/train", losses["train"], steps + 1)
+        writer.add_scalar("Loss/val", losses["val"], steps + 1)
+
     xb, yb = get_batch(train_data, BATCH_SIZE, BLOCK_SIZE)
     logits, loss = model(xb, yb)
     optimizer.zero_grad(set_to_none=True)
@@ -79,6 +115,8 @@ print(f"Total Time Taken: {time.time() - start_time}")
 print(loss.item())
 
 model = model.to("cpu")
+writer.flush()
+writer.close()
 print(
     decode(
         model.generate(torch.ones(1, 1, dtype=torch.long), MAX_NEW_TOKENS)[0].tolist()
