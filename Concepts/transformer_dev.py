@@ -12,7 +12,7 @@ BATCH_SIZE = 64
 MAX_NEW_TOKENS = 1000
 EPOCHS = 10000
 LEARNING_RATE = 1e-3
-SDEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 # DEVICE = torch.device("cpu")
 with open(TEXT_DATA_PATH, "r") as file:
     text_data = file.read()
