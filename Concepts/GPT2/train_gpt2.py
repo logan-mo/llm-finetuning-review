@@ -1,11 +1,27 @@
 from dataclasses import dataclass
+import time
 import math
 import torch
 import tiktoken
 import torch.nn as nn
 from torch.nn import functional as F
-
 from typing import Tuple, Dict, Optional
+
+# Optimization Notes:
+# This code is being run on an RTX 3060... Yeah.
+# Default takes an average of 8500s, 1880tps
+# Optimization 1: Instead of using fp32, use tf32 for floats (7700s, 2100tps)
+# Optimization 2: Use BFloat16 (7800s, 2000tps) # Not a significant, most likely because of the GPU I am using.
+# Optimization 3: Use Autcast with bfloat16.... but I can't do that becaue my GPU doesn't support this :( (Apparently windows + triton-windows + consumer gpu = bugs)
+# Optimization 4: torch.compile ... lead to (42000 ms, 400tps), something went terribly wrong
+# Optimization 5: Flash Attention ... Only works on Ubuntu because fuck the corporate slave
+# Optimization 6: Ugly numbers -> Pretty numbers. Changing vocab size from 50257 to 50304 (divisible by 32), counter-intuitively gives better tps... huh.
+# Optimization 7: Gradient Clipping
+#
+#
+#
+#
+#
 
 
 class CausalSelfAttention(nn.Module):
@@ -40,12 +56,12 @@ class CausalSelfAttention(nn.Module):
 
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
         att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
-        att = F.softmax(att, dim=1)
+        att = F.softmax(att, dim=-1)
 
         y = att @ v
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         y = self.c_proj(y)
-        return x
+        return y
 
 
 class MLP(nn.Module):
@@ -99,7 +115,7 @@ class GPT(nn.Module):
         self.transformer = nn.ModuleDict(
             dict(
                 wte=nn.Embedding(config.vocab_size, config.n_embd),
-                wpe=nn.Embedding(config.vocab_size, config.n_embd),
+                wpe=nn.Embedding(config.block_size, config.n_embd),
                 drop=nn.Dropout(config.dropout),
                 h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
                 ln_f=nn.LayerNorm(config.n_embd),
@@ -108,6 +124,15 @@ class GPT(nn.Module):
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size)
 
         self.transformer.wte.weight = self.lm_head.weight
+
+    def _init_weights(self, module):
+        # The mean of 0 and std of 0.02 comes directly from the GPT2 paper
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, targets=None) -> Tuple[torch.Tensor, torch.Tensor]:
         device = idx.device
@@ -249,23 +274,37 @@ torch.cuda.manual_seed(42)
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 TEXT_DATA_PATH = "tiny_shiekspear.txt"
 LEARNING_RATE = 3e-4
-EPOCHS = 2640
-BATCH_SIZE = 4
-CONTEXT_WINDOW = 32
+EPOCHS = 40
+BATCH_SIZE = 8
+CONTEXT_WINDOW = 1024
 
-model = GPT(GPTConfig())
-model.to(DEVICE)
 
 train_loader = DataLoader(BATCH_SIZE, CONTEXT_WINDOW)
 
+# torch.set_float32_matmul_precision("high")  # optimization 1
+torch.set_float32_matmul_precision("medium")  # optimization 2
+
+
+model = GPT(GPTConfig(vocab_size=50304))  # optimization 6
+model.to(DEVICE)
+
+# model = torch.compile(model)  # optimization 4
+
 optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 for i in range(EPOCHS):
+    t0 = time.time()
     optimizer.zero_grad()
     x, y = train_loader.next_batch()
     logits, loss = model(x.to(DEVICE), y.to(DEVICE))
     loss.backward()
     optimizer.step()
-    print(f"step {i}, loss: {loss.item()}")
+    torch.cuda.synchronize()
+    t1 = time.time()
+    dt = (t1 - t0) * 1000  # Time diff in miliseconds
+    tokens_per_sec = (train_loader.batch_size * train_loader.context_lenth) / (t1 - t0)
+    print(
+        f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}"
+    )  # Adding time control before starting optimizations
 
 
 # Eval
@@ -281,6 +320,10 @@ x = tokens.to(DEVICE)
 
 while x.size(1) < max_length:
     with torch.no_grad():
+        # optimization 3
+        # with torch.autocast(device_type=DEVICE, dtype=torch.bfloat16):
+        #     logits, loss = model(x)
+        #     import code; code.interact(local=locals())
         logits, loss = model(x)
         logits = logits[:, -1, :]
         probs = F.softmax(logits, dim=-1)
