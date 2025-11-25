@@ -76,31 +76,23 @@ train_data = train_data_tensor[: int(len(train_data_tensor) * TRAIN_SPLIT)]
 val_data = train_data_tensor[int(len(train_data_tensor) * TRAIN_SPLIT) :]
 
 
-class BigramLanguageModel(nn.Module):
-    def __init__(self, vocab_size, block_size, n_embed, head_size) -> None:
+class Head(nn.Module):
+    def __init__(self, n_embed, head_size, block_size):
         super().__init__()
-        self.vocab_size = vocab_size
-        self.block_size = block_size
-        self.n_embed = n_embed
 
-        self.token_embeddings = nn.Embedding(vocab_size, n_embed)
-        self.positional_embeddings = nn.Embedding(block_size, n_embed)
+        self.n_embed = n_embed
 
         self.queries = nn.Linear(n_embed, head_size, bias=False)
         self.keys = nn.Linear(n_embed, head_size, bias=False)
         self.values = nn.Linear(n_embed, head_size, bias=False)
 
         self.proj = nn.Linear(head_size, n_embed)
-        self.lm_head = nn.Linear(n_embed, vocab_size)
 
         self.register_buffer("tril", torch.tril(torch.ones(block_size, block_size)))
 
-    def forward(self, x, targets=None):
-        B, T = x.shape
-        token_emb = self.token_embeddings(x)
-        position_emb = self.positional_embeddings(torch.arange(0, T, device=x.device))
+    def forward(self, x):
 
-        x = token_emb + position_emb
+        B, T, C = x.shape
 
         q = self.queries(x)
         k = self.keys(x)
@@ -112,6 +104,32 @@ class BigramLanguageModel(nn.Module):
 
         x = wei @ v
         x = self.proj(x)
+
+        return x
+
+
+class BigramLanguageModel(nn.Module):
+    def __init__(self, vocab_size, block_size, n_embed, head_size) -> None:
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.block_size = block_size
+        self.n_embed = n_embed
+
+        self.token_embeddings = nn.Embedding(vocab_size, n_embed)
+        self.positional_embeddings = nn.Embedding(block_size, n_embed)
+
+        self.head = Head(n_embed, head_size, block_size)
+        self.lm_head = nn.Linear(n_embed, vocab_size)
+
+    def forward(self, x, targets=None):
+        B, T = x.shape
+        token_emb = self.token_embeddings(x)
+        position_emb = self.positional_embeddings(torch.arange(0, T, device=x.device))
+
+        x = token_emb + position_emb
+
+        x = self.head(x)
+
         logits = self.lm_head(x)
 
         if targets is None:
