@@ -23,6 +23,10 @@ from typing import Tuple, Dict, Optional
 # Improvement 2: LR scheduling
 # Improvement 3: AdamW weight decay
 
+# Gradient Accumulation
+# My GPU can only fit 16 batches of 1024, but GPT-3 used 0.5 M batch ON THE LOWER END... WTF
+# So to simulate sequentially any arbitrary batch size, we use gradient accumulations
+
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
@@ -274,10 +278,15 @@ torch.cuda.manual_seed(42)
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 TEXT_DATA_PATH = "tiny_shiekspear.txt"
 LEARNING_RATE = 3e-4
-EPOCHS = 40
+EPOCHS = 10
 BATCH_SIZE = 8
 CONTEXT_WINDOW = 1024
+total_batch_size = 524288  # (512 x 1024)
+assert total_batch_size % (BATCH_SIZE * CONTEXT_WINDOW) == 0
+grad_accum_steps = total_batch_size // (BATCH_SIZE * CONTEXT_WINDOW)
 
+print(f"Total Desired batch size: {total_batch_size}")
+print(f"Calculated Gradient accumulation steps: {grad_accum_steps}")
 
 train_loader = DataLoader(BATCH_SIZE, CONTEXT_WINDOW)
 
@@ -293,17 +302,30 @@ model.to(DEVICE)
 optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, fused=True)
 for i in range(EPOCHS):
     t0 = time.time()
+
     optimizer.zero_grad()
-    x, y = train_loader.next_batch()
-    logits, loss = model(x.to(DEVICE), y.to(DEVICE))
-    loss.backward()
+    loss_accum = 0
+    for micro_step in range(grad_accum_steps):
+        x, y = train_loader.next_batch()
+        logits, loss = model(x.to(DEVICE), y.to(DEVICE))
+        loss = (
+            loss / grad_accum_steps
+        )  # loss is cross_entropy, which uses a mean reduction. To keep the gradients from exploding, we need this "normalizer"
+        loss_accum += loss.detach()
+        loss.backward()
+
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # Gradient Clipping
     optimizer.step()
+
     torch.cuda.synchronize()
     t1 = time.time()
     dt = (t1 - t0) * 1000  # Time diff in miliseconds
-    tokens_per_sec = (train_loader.batch_size * train_loader.context_lenth) / (t1 - t0)
+    token_processed = (
+        train_loader.batch_size * train_loader.context_lenth * grad_accum_steps
+    )
+    tokens_per_sec = token_processed / dt
     print(
-        f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}"
+        f"step {i}, loss: {loss_accum.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}"
     )  # Adding time control before starting optimizations
 
 
