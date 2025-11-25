@@ -15,6 +15,7 @@ BLOCK_SIZE = 8
 BATCH_SIZE = 16
 HEAD_SIZE = 32
 N_EMBED = 32
+N_HEADS = 4
 
 LEARNING_RATE = 1e-3
 EVAL_INTERVAL = 250
@@ -105,8 +106,20 @@ class Head(nn.Module):
         return x
 
 
+class MultiHeadAttention(nn.Module):
+    def __init__(self, n_heads, n_embed, head_size, block_size):
+        super().__init__()
+        self.sa_heads = nn.ModuleList(
+            [Head(n_embed, head_size // n_heads, block_size) for _ in range(n_heads)]
+        )
+
+    def forward(self, x):
+        x = torch.concat([head(x) for head in self.sa_heads], dim=-1)
+        return x
+
+
 class BigramLanguageModel(nn.Module):
-    def __init__(self, vocab_size, block_size, n_embed, head_size) -> None:
+    def __init__(self, vocab_size, block_size, n_embed, head_size, n_heads) -> None:
         super().__init__()
         self.vocab_size = vocab_size
         self.block_size = block_size
@@ -115,7 +128,7 @@ class BigramLanguageModel(nn.Module):
         self.token_embeddings = nn.Embedding(vocab_size, n_embed)
         self.positional_embeddings = nn.Embedding(block_size, n_embed)
 
-        self.sa_head = Head(n_embed, head_size, block_size)
+        self.sa_heads = MultiHeadAttention(n_heads, n_embed, head_size, block_size)
         self.lm_head = nn.Linear(n_embed, vocab_size)
 
     def forward(self, x, targets=None):
@@ -124,9 +137,7 @@ class BigramLanguageModel(nn.Module):
         position_emb = self.positional_embeddings(torch.arange(0, T, device=x.device))
 
         x = token_emb + position_emb
-
-        x = self.sa_head(x)
-
+        x = self.sa_heads(x)
         logits = self.lm_head(x)
 
         if targets is None:
@@ -152,7 +163,9 @@ class BigramLanguageModel(nn.Module):
 
 
 writer = SummaryWriter()
-model = BigramLanguageModel(VOCAB_SIZE, BLOCK_SIZE, N_EMBED, HEAD_SIZE).to(DEVICE)
+model = BigramLanguageModel(VOCAB_SIZE, BLOCK_SIZE, N_EMBED, HEAD_SIZE, N_HEADS).to(
+    DEVICE
+)
 optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 
 start_time = time.time()
