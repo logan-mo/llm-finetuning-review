@@ -20,7 +20,7 @@ N_HEADS = 4
 LEARNING_RATE = 1e-3
 EVAL_INTERVAL = 250
 EVAL_ITERS = 100
-EPOCHS = 30000
+EPOCHS = 5000
 
 MAX_NEW_TOKENS = 1000
 
@@ -112,6 +112,9 @@ class MultiHeadAttention(nn.Module):
         self.sa_heads = nn.ModuleList(
             [Head(n_embed, head_size // n_heads, block_size) for _ in range(n_heads)]
         )
+        self.proj = nn.Linear(
+            n_embed, n_embed
+        )  # Projecting back into the residual pathway
 
     def forward(self, x):
         x = torch.concat([head(x) for head in self.sa_heads], dim=-1)
@@ -121,7 +124,15 @@ class MultiHeadAttention(nn.Module):
 class Forward(nn.Module):
     def __init__(self, head_size):
         super().__init__()
-        self.net = nn.Sequential(nn.Linear(head_size, head_size), nn.ReLU())
+        self.net = nn.Sequential(
+            nn.Linear(
+                head_size, 4 * head_size
+            ),  # Multiplying by 4 because the transformer paper does say. They have 512 inputs and 2048 hidden dims, so we multiply by 4
+            nn.ReLU(),
+            nn.Linear(
+                4 * head_size, head_size
+            ),  # Projecting back into the residual pathway
+        )
 
     def forward(self, x):
         return self.net(x)
@@ -136,8 +147,10 @@ class Block(nn.Module):
         self.ffwd = Forward(head_size)  # Acts as computation within a node
 
     def forward(self, x):
-        x = self.sa_heads(x)
-        x = self.ffwd(x)
+        x = x + self.sa_heads(
+            x
+        )  # Adding residual connections becuase the network is too deep and learning is bad
+        x = x + self.ffwd(x)
         return x
 
 
