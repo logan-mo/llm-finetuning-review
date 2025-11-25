@@ -16,12 +16,12 @@ from typing import Tuple, Dict, Optional
 # Optimization 4: torch.compile ... lead to (42000 ms, 400tps), something went terribly wrong
 # Optimization 5: Flash Attention ... Only works on Ubuntu because fuck the corporate slave
 # Optimization 6: Ugly numbers -> Pretty numbers. Changing vocab size from 50257 to 50304 (divisible by 32), counter-intuitively gives better tps... huh.
-# Optimization 7: Gradient Clipping
-#
-#
-#
-#
-#
+# Optimization 7: In AdamW, use fused=True
+
+# Improvement Notes:
+# Improvement 1: Gradient Clipping
+# Improvement 2: LR scheduling
+# Improvement 3: AdamW weight decay
 
 
 class CausalSelfAttention(nn.Module):
@@ -290,7 +290,7 @@ model.to(DEVICE)
 
 # model = torch.compile(model)  # optimization 4
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
+optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, fused=True)
 for i in range(EPOCHS):
     t0 = time.time()
     optimizer.zero_grad()
