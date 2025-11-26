@@ -13,10 +13,11 @@ from typing import Tuple, Dict, Optional
 # Optimization 1: Instead of using fp32, use tf32 for floats (7700s, 2100tps)
 # Optimization 2: Use BFloat16 (7800s, 2000tps) # Not a significant, most likely because of the GPU I am using.
 # Optimization 3: Use Autcast with bfloat16.... but I can't do that becaue my GPU doesn't support this :( (Apparently windows + triton-windows + consumer gpu = bugs)
-# Optimization 4: torch.compile ... lead to (42000 ms, 400tps), something went terribly wrong
+# Optimization 4: torch.compile ... lead to (42000 ms, 400tps), something went terribly wrong (windows issue. Can't use triton on windows, thus no compilation on windows)
 # Optimization 5: Flash Attention ... Only works on Ubuntu because fuck the corporate slave
 # Optimization 6: Ugly numbers -> Pretty numbers. Changing vocab size from 50257 to 50304 (divisible by 32), counter-intuitively gives better tps... huh.
 # Optimization 7: In AdamW, use fused=True
+# Optimization 8: Distributed Data Parallel to use multiple gpus by running identical copies of the same model on a disjoint set of the data using multiple GPUs
 
 # Improvement Notes:
 # Improvement 1: Gradient Clipping
